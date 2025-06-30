@@ -1,0 +1,206 @@
+clc; clear; close all;
+
+% Environment Parameters
+x_limits = [-27, 27]; % X-axis limits
+y_limits = [-16, 16]; % Y-axis limits
+goal_region = [0, 1, 2]; % [x_goal, y_goal, radius]
+
+% Obstacles (Defined as a cell array of polygons)
+obstacles = { 
+    [-27, 16; -21, 16; -21, 14; -27, 14]; % Obstacle 1
+    [-27, -12; -21, -12; -21, -16; -27, -16]; % Obstacle 2
+    [-27, 8; -21, 8; -21, -1; -9, -1; -9, -7; -27, -7]; % Obstacle 3
+    [-15, 16; 10, 16; 10, 14; -3, 14; -3, 4; -15, 4]; % Obstacle 4
+    [20, 16; 27, 16; 27, 14; 20, 14]; % Obstacle 5
+    [3, 8; 27, 8; 27, -7; 20, -7; 20, 4; 3, 4]; % Obstacle 6
+    [20, -13; 27, -13; 27, -16; 20, -16]; % Obstacle 7
+    [-15, -16; -15, -12; -3, -12; -3, -2; 12, -2; 12, -16] % Obstacle 8
+};
+
+% Scaling Factor
+scaling_factor = 0.25;
+
+% Robot and Trailer Parameters (Scaled)
+L_r = 4 * scaling_factor; % Robot length
+W_r = 3 * scaling_factor; % Robot width
+L_t = 4 * scaling_factor; % Trailer length
+W_t = 2 * scaling_factor; % Trailer width
+radius_joint = 0.1 * scaling_factor; % Revolute joint radius
+
+% RRT Parameters
+start = [-24, 12, pi/2]; % [x_start, y_start, theta_start]
+max_iterations = 8000;
+step_size = 1.0 * scaling_factor;
+
+% Initialize RRT
+nodes = start; % Tree nodes: [x, y, theta]
+parent = 0; % Parent indices
+goal_reached = false;
+
+% Initialize Plot
+figure;
+hold on;
+axis equal;
+grid on;
+xlim(x_limits);
+ylim(y_limits);
+xlabel('X-axis');
+ylabel('Y-axis');
+title('RRT with Obstacles for Tricycle Robot with Trailer');
+
+% Plot Goal Region
+theta = linspace(0, 2*pi, 50);
+goal_x = goal_region(1) + goal_region(3) * cos(theta);
+goal_y = goal_region(2) + goal_region(3) * sin(theta);
+fill(goal_x, goal_y, 'g', 'FaceAlpha', 0.3);
+
+% Plot Obstacles
+for i = 1:length(obstacles)
+    fill(obstacles{i}(:, 1), obstacles{i}(:, 2), 'g', 'EdgeColor', 'k');
+end
+
+% Main RRT Loop
+for iter = 1:max_iterations
+    % Random Sampling
+    if rand < 0.2
+        % Bias toward the goal
+        sample = goal_region(1:2);
+    else
+        % Random sample in free space
+        sample = [rand * diff(x_limits) + x_limits(1), rand * diff(y_limits) + y_limits(1)];
+    end
+    
+    % Find Nearest Node
+    distances = vecnorm(nodes(:, 1:2) - sample, 2, 2);
+    [~, nearest_idx] = min(distances);
+    nearest_node = nodes(nearest_idx, :);
+    
+    % Steer Toward Sample
+    theta_new = atan2(sample(2) - nearest_node(2), sample(1) - nearest_node(1));
+    new_node = nearest_node(1:2) + step_size * [cos(theta_new), sin(theta_new)];
+    new_node = [new_node, theta_new];
+    
+    % Collision Check
+    if check_limits(new_node, x_limits, y_limits) && ...
+       ~check_collision(new_node, obstacles, L_r, W_r, L_t, W_t)
+        % Add New Node
+        nodes = [nodes; new_node];
+        parent = [parent; nearest_idx];
+        
+        % Plot Connection
+        plot([nearest_node(1), new_node(1)], [nearest_node(2), new_node(2)], 'b');
+        
+        % Check Goal Reached
+        if norm(new_node(1:2) - goal_region(1:2)) <= goal_region(3)
+            goal_reached = true;
+            disp('Goal Reached!');
+            break;
+        end
+    end
+end
+
+% Trace Path to Goal
+if goal_reached
+    current_idx = size(nodes, 1);
+    path = [];
+    while current_idx > 0
+        path = [nodes(current_idx, :); path]; %#ok<AGROW>
+        current_idx = parent(current_idx);
+    end
+    
+    % Plot Path
+    for i = 1:size(path, 1) - 1
+        plot([path(i, 1), path(i + 1, 1)], [path(i, 2), path(i + 1, 2)], 'r', 'LineWidth', 2);
+    end
+    
+    % Visualize Robot and Trailer Along the Path
+    for i = 1:size(path, 1)
+        plot_robot_and_trailer(path(i, :), L_r, W_r, L_t, W_t, radius_joint);
+        pause(0.1);
+    end
+else
+    disp('Goal Not Reached.');
+end
+
+hold off;
+
+% Collision Check
+function collision = check_collision(node, obstacles, L_r, W_r, L_t, W_t)
+    % Robot and Trailer Positions
+    x_r = node(1);
+    y_r = node(2);
+    theta_r = node(3);
+    x_t = x_r - L_t * cos(theta_r);
+    y_t = y_r - L_t * sin(theta_r);
+    
+    % Compute Vertices
+    robot_vertices = [
+        x_r + L_r/2, y_r + W_r/2;
+        x_r + L_r/2, y_r - W_r/2;
+        x_r - L_r/2, y_r - W_r/2;
+        x_r - L_r/2, y_r + W_r/2
+    ];
+    trailer_vertices = [
+        x_t + L_t/2, y_t + W_t/2;
+        x_t + L_t/2, y_t - W_t/2;
+        x_t - L_t/2, y_t - W_t/2;
+        x_t - L_t/2, y_t + W_t/2
+    ];
+    
+    % Check Against All Obstacles
+    collision = false;
+    for i = 1:length(obstacles)
+        if any(inpolygon(robot_vertices(:, 1), robot_vertices(:, 2), obstacles{i}(:, 1), obstacles{i}(:, 2))) || ...
+           any(inpolygon(trailer_vertices(:, 1), trailer_vertices(:, 2), obstacles{i}(:, 1), obstacles{i}(:, 2)))
+            collision = true;
+            break;
+        end
+    end
+end
+
+% Check if Node is Within Limits
+function within_limits = check_limits(node, x_limits, y_limits)
+    x = node(1);
+    y = node(2);
+    within_limits = x >= x_limits(1) && x <= x_limits(2) && ...
+                    y >= y_limits(1) && y <= y_limits(2);
+end
+
+% Plot Robot (Tricycle) and Trailer
+function plot_robot_and_trailer(node, L_r, W_r, L_t, W_t, radius_joint)
+    % Extract Position and Orientation
+    x_r = node(1);
+    y_r = node(2);
+    theta_r = node(3);
+    
+    % Trailer Position
+    x_t = x_r - L_t * cos(theta_r);
+    y_t = y_r - L_t * sin(theta_r);
+    
+    % Compute Trailer Vertices
+    trailer_vertices = [
+        x_t + L_t/2, y_t + W_t/2;
+        x_t + L_t/2, y_t - W_t/2;
+        x_t - L_t/2, y_t - W_t/2;
+        x_t - L_t/2, y_t + W_t/2
+    ];
+    
+    % Compute Tricycle Vertices (Triangle)
+    tricycle_vertices = [
+        x_r + L_r * cos(theta_r), y_r + L_r * sin(theta_r); % Front vertex
+        x_r - L_r/2 * cos(theta_r) + W_r/2 * sin(theta_r), y_r - L_r/2 * sin(theta_r) - W_r/2 * cos(theta_r); % Rear left
+        x_r - L_r/2 * cos(theta_r) - W_r/2 * sin(theta_r), y_r - L_r/2 * sin(theta_r) + W_r/2 * cos(theta_r)  % Rear right
+    ];
+    
+    % Plot Tricycle as a Triangle
+    fill(tricycle_vertices(:, 1), tricycle_vertices(:, 2), 'b', 'FaceAlpha', 0.5); % Tricycle
+    
+    % Plot Trailer
+    fill(trailer_vertices(:, 1), trailer_vertices(:, 2), 'r', 'FaceAlpha', 0.5);
+    
+    % Plot Joint Line
+    plot([x_r, x_t], [y_r, y_t], 'k', 'LineWidth', 2); % Joint Line
+    
+    % Plot Revolute Joint as a Circle
+    viscircles([x_r, y_r], radius_joint, 'EdgeColor', 'k');
+end
